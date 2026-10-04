@@ -1,95 +1,147 @@
 # LocalLecture
 
-第一版：本地课堂录音 → 带时间戳转写 → 主题分段 → PDF/PPTX 解析 → 课件对齐 → 分段笔记 → 证据核验 → Markdown / Gradio。自行组织 pipeline，不使用 LangChain，不加入 SQLite。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 运行
+**Evidence-grounded lecture note generation from audio and slide materials.**
 
-Python 3.11 / 3.12。在项目根目录执行：
+LocalLecture is an independent Python project that generates structured lecture notes from recordings and PDF/PPTX materials using locally hosted models. Each accepted claim includes a source quotation and a reference to transcript timestamps or slide pages.
+
+The prototype combines timestamped transcription, semantic topic segmentation, slide retrieval, structured generation, and evidence validation. It supports audio-only, slides-only, and combined inputs through a command-line pipeline and a local Gradio interface.
+
+## Features
+
+- **Timestamped transcription:** faster-whisper produces segment and word timestamps; chunking preserves the original transcript segments.
+- **Semantic segmentation and retrieval:** Sentence Transformers embeddings group adjacent chunks and retrieve relevant slide text using cosine similarity and a thresholded top-k search.
+- **Claim-level evidence:** Pydantic schemas require source IDs and quotations; validation checks source availability, quotation matching, and semantic support for paraphrased claims.
+- **Traceable outputs:** Markdown citations use timestamps and page numbers from source records. JSON retains accepted claims, rejection reasons, settings, and source text.
+- **Modular processing:** intermediate transcripts, parsed slides, sections, retrieval results, and drafts are saved for inspection.
+
+Slide matching currently uses text similarity. It does not implement temporal synchronization between the recording and slide presentation, or visual understanding of slide images.
+
+## Quick start: synthetic demo
+
+Use Python 3.11 or 3.12. From the project root, run the following in PowerShell:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m src.pipeline --demo --title "Neural Networks (Synthetic Demo)"
+```
+
+This demo requires no recording, Ollama, or model downloads. It uses synthetic transcripts and slides, word-frequency vectors, and extractive generation to demonstrate pipeline behavior and source traceability. It does not evaluate real ASR, embedding retrieval, or LLM performance.
+
+## Run with local models
+
+Install the full dependencies and prepare Ollama:
+
+```powershell
 python -m pip install -r requirements.txt
 ollama pull qwen3:4b
-# 如果 Ollama 尚未启动，在另一个终端运行 ollama serve
-python -m src.pipeline --audio data/raw/audio/lecture.mp3 --slides data/raw/slides/lecture.pdf --title "COMPxxxx — Neural Networks" --config config/config.yaml
+```
+
+If Ollama is not already running, start `ollama serve` in another terminal. Run the combined pipeline:
+
+```powershell
+python -m src.pipeline --audio data/raw/audio/lecture.mp3 --slides data/raw/slides/lecture.pdf --title "Lecture Notes" --config config/config.yaml
+```
+
+For audio-only processing, omit `--slides`. For slides-only processing:
+
+```powershell
+python -m src.pipeline --slides data/raw/slides/lecture.pptx --title "Slide Notes" --config config/config.yaml
+```
+
+Launch the local interface:
+
+```powershell
 python -m app.gradio_app
 ```
 
-Qwen3 8B 实验可将配置中的 `ollama_model` 改为 `qwen3:8b`，并先拉取该模型。默认 Whisper 使用 CPU / int8；GPU 配置与运行库需按 faster-whisper 文档设置。
+Whisper and Sentence Transformers download models on first use. Once those models are cached and Ollama is ready, inference runs locally. The Gradio interface listens on the local machine without creating a public sharing link.
 
-首次使用 Whisper 和 sentence-transformers 会下载模型；缓存模型并准备好 Ollama 后可本地运行。模型大小与首次运行时间取决于配置及硬件。UI 仅监听本机，不创建公共分享链接。
+The default ASR configuration uses CPU/int8. GPU execution requires the appropriate faster-whisper runtime. To experiment with Qwen3 8B, download `qwen3:8b` and change `ollama_model` in the configuration. The CLI reads YAML through `--config`; the interface uses `Settings` defaults.
 
-无需音频、Ollama 或模型下载的演示：
+### Slides-only behavior
+
+This mode requires Ollama but does not load Whisper or the embedding model. Notes are generated and validated for each page containing extractable text. Citations contain slide pages only; claims categorized as lecturer explanations require audio evidence and are rejected in this mode.
+
+Blank pages retain their original page numbers but are skipped during generation. Documents with no extractable text produce an error requesting OCR or a recording. The exported JSON records `input_mode: slides_only`.
+
+### Reuse an exported transcript
 
 ```powershell
-python -m pip install -e .
-python -m src.pipeline --demo --title "COMPxxxx — Neural Networks (Synthetic Demo)"
+python -m src.pipeline --transcript data/processed/<run-id>/transcripts/transcript.json --slides data/raw/slides/lecture.pptx
+```
+
+Replace `<run-id>` with a previous run ID.
+
+## Evidence validation
+
+1. Audio records use IDs such as `audio:N` and retain segment start/end times. Slide records use `slide:N` and one-based physical page numbers, independent of numbers printed on the slides.
+2. Each generated claim must include a source ID and a quotation. References are restricted to the current section's audio records and retrieved slide candidates.
+3. The validator checks that each source exists and that its quotation occurs in the source text after whitespace normalization.
+4. Exact quoted claims pass deterministic checks; paraphrased claims are additionally checked for semantic support by Ollama.
+5. Rejected claims are excluded from Markdown. Rejection reasons remain in JSON, and original drafts are saved separately.
+
+Citations are rendered from source records rather than model-generated timestamps or page numbers. Retrieval similarity alone does not establish evidential support.
+
+Confidence labels are uncalibrated: the maximum is `Medium`, and sections with rejections or no accepted claims receive `Low`. These labels are not probabilities of correctness. Generation and semantic verification use the same model and can share errors. Section titles use deterministic numbering; the lecture title is supplied by the user.
+
+## Project structure and outputs
+
+Each run receives a unique ID to avoid overwriting earlier results.
+
+```text
+config/config.yaml             Pipeline settings
+src/audio/                     Timestamped transcription
+src/documents/                 PDF/PPTX text extraction
+src/processing/                Chunking, segmentation, slide retrieval
+src/generation/                Schemas, Ollama generation, Markdown
+src/evaluation/                Evidence validation and run metrics
+src/pipeline.py                CLI and pipeline orchestration
+app/gradio_app.py              Local upload/download interface
+tests/                         Automated tests
+experiments/                   Evaluation plans
+data/raw/                      Local recordings and slide files
+data/processed/<run-id>/
+  transcripts/transcript.json  Transcript and timestamps
+  slides/slides.json           Extracted page text
+  sections.json                Sections
+  alignments/alignments.json   Retrieved slide candidates
+  drafts/                     Unverified generated drafts
+outputs/notes/<run-id>/
+  notes.md                    Notes with source references
+  notes.json                  Claims, evidence, settings, rejections
+  report.json                 Claim acceptance and alignment coverage
+```
+
+Raw materials, processed data, and generated outputs are excluded from Git by the existing `.gitignore`.
+
+## Testing and current validation status
+
+With the full dependencies installed, run:
+
+```powershell
 python -m unittest discover -s tests -v
 ```
 
-演示使用合成转写、合成课件、词频向量和原文摘录，只检验管道及来源追溯；不能代表实际 ASR、语义对齐或 LLM 效果。
+The tests cover synthetic end-to-end processing, fabricated sources and quotations, unsupported claims, timestamp validation, segment preservation, abstention on unrelated slides, and slides-only processing. Document tests use generated PDF/PPTX fixtures and a substitute generator.
 
-## Sources 与验证
+A saved slides-only run on real lecture materials is available locally. Real audio transcription and the combined audio/slide/Ollama pipeline still require end-to-end validation. Existing run metrics describe claim acceptance and retrieval coverage; they do not measure factual accuracy.
 
-### 仅课件模式
+## Limitations and planned evaluation
 
-页面可以只上传 PDF/PPTX，无需录音。命令行也支持：
+- PPTX parsing extracts text, tables, and grouped shapes; the system does not interpret images, charts, or handwritten equations. PDF extraction uses per-page Markdown without a vision model. Image-only materials require suitable OCR preprocessing.
+- The prototype does not perform speaker diarization, timestamp-linked audio playback, or merging of multiple slide decks.
+- Segmentation and retrieval thresholds are initial experimental settings. Unmatched sections retain audio evidence without forcing a slide match.
+- Chunking preserves complete ASR segments, so an unusually long segment can exceed the target duration. Oversized generation contexts raise an error rather than silently dropping evidence.
+- Model and parsing failures are surfaced explicitly. Intermediate transcripts are saved before note generation.
 
-```powershell
-.\.venv\Scripts\python.exe -m src.pipeline --slides "data/raw/slides/lecture.pptx" --title "课程课件笔记"
-```
+Planned evaluation will use manually annotated lecture samples to compare audio-only and combined inputs, assess slide matching and source support, and investigate information coverage. Model comparisons and claims of improved reliability remain future work.
 
-此模式需要 Ollama，按有文字的物理页逐页生成并核验笔记，不加载 Whisper 或 embedding 模型。Sources 仅含课件页码，没有音频时间或讲师讲解。空白页保留原始页号但跳过生成；全无文字的课件会提示需要 OCR 或录音。JSON 标记 `input_mode: slides_only`。
+## Upstream references
 
-- 音频来源固定为 `audio:N`，携带原始 segment 起止秒数；同时保存 word timestamps。
-- PDF / PPTX 使用 `slide:N` 和从 1 开始的物理页码，不依赖课件正文中的页号。
-- 每条 claim 必须提供来源 ID 和原文 quote。校验器限制引用只能来自当前章节音频和候选课件，检查 quote 是否存在。
-- 完整原文摘录通过确定性校验；改写内容再交给 Ollama 检查语义支持。失败的 claim 从 Markdown 剔除，理由保留在 JSON，完整草稿保留在 processed。
-- Markdown 中的时间和页码从真实来源记录生成，不采信 LLM 生成的页码或时间。Sources 仅展示已接受 claim 使用的记录；相似课件匹配本身不是引用证据。
-- 尚未校准准确率，Confidence 最高为 Medium；存在拒绝或无可用 claim 时为 Low。它不是正确概率。生成器与验证器使用同一模型，可能共同犯错。
-- 暂使用确定性章节编号，避免未经验证的 LLM 章节标题引入事实。课程主标题由用户提供。
-
-## 输出与模块
-
-每次运行生成独立 ID，避免覆盖文件：
-
-```text
-config/config.yaml
-data/raw/audio/                 原始音频
-data/raw/slides/                原始课件
-data/processed/<run-id>/
-  transcripts/transcript.json   带时间戳转写
-  slides/slides.json            逐页正文
-  sections.json                 主题章节
-  alignments/alignments.json    相似度候选
-  drafts/                      核验前草稿
-data/evaluation/                人工标注预留
-src/audio/                     faster-whisper
-src/documents/                 PyMuPDF4LLM / python-pptx
-src/processing/                时长分块、相邻语义分段、余弦对齐
-src/generation/                Pydantic、Ollama、Markdown
-src/evaluation/                来源与语义校验、运行指标
-src/pipeline.py                命令行与完整编排
-app/gradio_app.py              本机上传与下载界面
-outputs/notes/<run-id>/
-  notes.md
-  notes.json                   claim 引用、原文、设置、拒绝原因
-  report.json                  接受比例、对齐覆盖率
-```
-
-复用已导出的转写：`python -m src.pipeline --transcript data/processed/<run-id>/transcripts/transcript.json --slides lecture.pptx`。CLI 使用 `--config` 读取 YAML；UI 采用 Settings 默认值。
-
-分段合并相邻高相似度块，对齐选择超过阈值的 top-k 课件；没有匹配就保留音频证据，不强配。参数都是初始实验值，需用真实课程标注调参。分块不截断原始 segment，因此单个超长 segment 可超过时长上限；过长生成上下文显式报错，避免静默丢失证据。
-
-## 第一版边界
-
-PPTX 提取文本、表格和组合形状，不理解图片、图表或手写公式。PDF 使用逐页 Markdown，未加入视觉模型；扫描件效果取决于本地 OCR 能力。无文本页保留页码但不参与对齐。当前不做说话人分离、不播放定位音频、不做多课件文件合并。模型调用或解析失败会明确报错，不伪造结果；中间转写会在生成前保存。
-
-实际音频与 Ollama 集成仍需在安装完整依赖、准备模型后验证。当前测试覆盖合成端到端链路、伪造来源、伪造引用、无证据推断、时间戳与拒绝匹配行为。报告指标不是 factual accuracy；模型对比、人工评价、可视化实验放到取得真实样本之后。
-
-## 上游接口参考
-
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)：时间戳及 VAD。
-- [PyMuPDF4LLM API](https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html)：逐页 Markdown。
-- [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs)：JSON Schema 输出。
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper): transcription, timestamps, and voice activity detection.
+- [PyMuPDF4LLM API](https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html): per-page Markdown extraction.
+- [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs): JSON Schema-constrained generation.
