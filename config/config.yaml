@@ -1,0 +1,14 @@
+whisper_model: small
+whisper_device: cpu
+whisper_compute_type: int8
+language: null
+embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+ollama_url: http://localhost:11434
+ollama_model: qwen3:4b
+chunk_seconds: 45
+section_max_seconds: 240
+topic_threshold: 0.55
+alignment_threshold: 0.35
+alignment_top_k: 3
+output_dir: outputs/notes
+processed_dir: data/processed
